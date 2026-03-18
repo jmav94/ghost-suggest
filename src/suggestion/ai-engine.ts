@@ -1,5 +1,6 @@
 import { Ollama } from 'ollama';
 import { GhostConfig, getSystemPrompt } from '../config/config.js';
+import { redactSecrets } from '../core/ansi-stripper.js';
 
 export class AIEngine {
   private ollama: Ollama;
@@ -20,13 +21,16 @@ export class AIEngine {
     const systemPrompt = getSystemPrompt(this.config.language);
 
     try {
+      // Redact potential secrets before sending to LLM
+      const safeContext = redactSecrets(context);
+
       const response = await this.ollama.chat({
         model: this.config.model,
         messages: [
           { role: 'system', content: systemPrompt },
           {
             role: 'user',
-            content: `Sesión de terminal reciente:\n\n${context}\n\nEl asistente terminó de responder y espera la siguiente instrucción del usuario. ¿Qué debería escribir el usuario como siguiente paso?`,
+            content: `Sesión de terminal reciente:\n\n${safeContext}\n\nEl asistente terminó de responder y espera la siguiente instrucción del usuario. ¿Qué debería escribir el usuario como siguiente paso?`,
           },
         ],
         options: {

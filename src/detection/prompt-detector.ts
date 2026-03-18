@@ -7,7 +7,13 @@ export class PromptDetector {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private config: GhostConfig) {
-    this.promptRegexes = config.promptPatterns.map(p => new RegExp(p));
+    this.promptRegexes = config.promptPatterns.flatMap(p => {
+      try {
+        return [new RegExp(p)];
+      } catch {
+        return [];
+      }
+    });
     this.securityPatterns = config.securityPatterns;
   }
 

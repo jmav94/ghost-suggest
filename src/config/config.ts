@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -46,16 +46,44 @@ const DEFAULT_CONFIG: GhostConfig = {
 
 export function loadConfig(): GhostConfig {
   if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+    mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   }
 
   if (!existsSync(CONFIG_FILE)) {
-    writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2));
+    writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2), { mode: 0o600 });
     return { ...DEFAULT_CONFIG };
   }
 
-  const raw = readFileSync(CONFIG_FILE, 'utf-8');
-  const userConfig = JSON.parse(raw) as Partial<GhostConfig>;
+  let userConfig: Partial<GhostConfig>;
+  try {
+    const raw = readFileSync(CONFIG_FILE, 'utf-8');
+    userConfig = JSON.parse(raw) as Partial<GhostConfig>;
+  } catch {
+    console.warn('ghost-suggest: config.json is malformed, using defaults.');
+    userConfig = {};
+  }
+
+  // Validate ollamaHost - only allow localhost to prevent SSRF
+  if (userConfig.ollamaHost) {
+    try {
+      const url = new URL(userConfig.ollamaHost);
+      if (!['127.0.0.1', 'localhost', '::1'].includes(url.hostname)) {
+        console.warn(`ghost-suggest: ollamaHost "${userConfig.ollamaHost}" is not localhost. Falling back to default.`);
+        delete userConfig.ollamaHost;
+      }
+    } catch {
+      delete userConfig.ollamaHost;
+    }
+  }
+
+  // Clamp numeric values to safe ranges
+  if (typeof userConfig.contextLines === 'number') {
+    userConfig.contextLines = Math.min(Math.max(userConfig.contextLines, 5), 500);
+  }
+  if (typeof userConfig.debounceMs === 'number') {
+    userConfig.debounceMs = Math.min(Math.max(userConfig.debounceMs, 100), 5000);
+  }
+
   return { ...DEFAULT_CONFIG, ...userConfig };
 }
 

@@ -1,5 +1,5 @@
 import * as pty from 'node-pty-prebuilt-multiarch';
-import { appendFileSync } from 'fs';
+import { appendFileSync, openSync, closeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { OutputBuffer } from './output-buffer.js';
@@ -114,17 +114,27 @@ export class PtyManager {
     process.on('SIGTERM', () => this.ptyProcess.kill('SIGTERM'));
   }
 
+  private logFd: number | null = null;
+
   private log(msg: string): void {
     if (!this.debug) return;
+    // Create log file with restricted permissions (owner only)
+    if (this.logFd === null) {
+      this.logFd = openSync(
+        this.logFile,
+        fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_APPEND,
+        0o600,
+      );
+    }
     const ts = new Date().toISOString().slice(11, 23);
-    appendFileSync(this.logFile, `[${ts}] ${msg}\n`);
+    appendFileSync(this.logFd, `[${ts}] ${msg}\n`);
   }
 
   private async tryShowSuggestion(): Promise<void> {
     if (this.isSuggesting) return;
 
     const recentLines = this.buffer.getRecentLines(15);
-    this.log(`IDLE: ${JSON.stringify(recentLines.slice(-5))}`);
+    this.log(`IDLE: ${recentLines.length} recent lines`);
 
     let hasPrompt = false;
     for (let i = recentLines.length - 1; i >= 0; i--) {
@@ -144,9 +154,10 @@ export class PtyManager {
     this.renderer.showLoading();
 
     try {
-      const context = this.buffer.getContext(this.config.contextLines);
+      const MAX_CONTEXT_BYTES = 16_000;
+      const context = this.buffer.getContext(this.config.contextLines).slice(-MAX_CONTEXT_BYTES);
       const suggestion = await this.engine.suggest(context);
-      this.log(`Suggestion: ${JSON.stringify(suggestion)}`);
+      this.log(`Suggestion received (${suggestion.length} chars)`);
 
       if (suggestion && this.isSuggesting) {
         this.renderer.render(suggestion);
