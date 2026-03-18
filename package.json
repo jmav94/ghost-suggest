@@ -1,0 +1,30 @@
+{
+  "name": "ghost-suggest",
+  "version": "0.1.0",
+  "description": "AI-powered terminal ghost text suggestions using Ollama",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ghost-suggest": "dist/index.js",
+    "gs": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "terminal",
+    "ai",
+    "autocomplete",
+    "ghost-text",
+    "ollama"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@types/node": "^25.5.0",
+    "node-pty-prebuilt-multiarch": "^0.10.1-pre.5",
+    "ollama": "^0.6.3",
+    "typescript": "^5.9.3"
+  }
+}
