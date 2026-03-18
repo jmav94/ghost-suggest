@@ -1,12 +1,11 @@
 /**
- * Ghost Text Renderer - Status Bar Approach
+ * Ghost Text Renderer - Status Bar (No cursor restore)
  *
- * Reserves the last row of the terminal as a suggestion bar.
- * NO animated elements - only writes to status bar when idle.
+ * Writes suggestions to the last terminal row.
+ * NEVER uses cursor save/restore - avoids all TUI conflicts.
+ * After writing, cursor stays at bar. Claude Code's next
+ * output will reposition it correctly.
  */
-
-const SAVE = '\x1b[s';
-const RESTORE = '\x1b[u';
 
 export class GhostTextRenderer {
   private currentSuggestion: string = '';
@@ -21,9 +20,6 @@ export class GhostTextRenderer {
     process.stdout.on('resize', () => {
       this.cols = process.stdout.columns || 80;
       this.rows = process.stdout.rows || 24;
-      if (this.currentSuggestion) {
-        this.renderSuggestionBar(this.currentSuggestion);
-      }
     });
   }
 
@@ -31,68 +27,56 @@ export class GhostTextRenderer {
     return (process.stdout.rows || 24) - 1;
   }
 
-  /**
-   * Show static loading message (no animation, no intervals)
-   */
   showLoading(): void {
     const text = ' ... ';
     const padded = text + ' '.repeat(Math.max(0, this.cols - text.length));
-
+    // Write to last row. No cursor restore.
     process.stdout.write(
-      SAVE +
       `\x1b[${this.rows};1H` +
       '\x1b[48;5;236m\x1b[38;5;245m' +
       padded +
-      '\x1b[0m' +
-      RESTORE
+      '\x1b[0m'
     );
   }
 
   render(suggestion: string): void {
     if (!suggestion || !process.stdout.isTTY) return;
     this.currentSuggestion = suggestion;
-    this.renderSuggestionBar(suggestion);
     this.isRendered = true;
-  }
 
-  private renderSuggestionBar(suggestion: string): void {
     const prefix = ' TAB \u2192 ';
     const maxLen = this.cols - prefix.length - 1;
     const truncated = suggestion.length > maxLen
       ? suggestion.slice(0, maxLen - 1) + '\u2026'
       : suggestion;
-
     const padding = ' '.repeat(Math.max(0, this.cols - prefix.length - truncated.length));
 
     process.stdout.write(
-      SAVE +
       `\x1b[${this.rows};1H` +
       '\x1b[48;5;236m' +
-      '\x1b[1m\x1b[38;5;75m' +
-      prefix +
-      '\x1b[22m\x1b[38;5;252m' +
-      truncated +
-      padding +
-      '\x1b[0m' +
-      RESTORE
+      '\x1b[1m\x1b[38;5;75m' + prefix +
+      '\x1b[22m\x1b[38;5;252m' + truncated + padding +
+      '\x1b[0m'
     );
   }
 
+  // No terminal writes - just dismiss in memory
   clear(): void {
-    if (!this.isRendered) return;
-    process.stdout.write(
-      SAVE +
-      `\x1b[${this.rows};1H` +
-      '\x1b[K' +
-      RESTORE
-    );
+    this.currentSuggestion = '';
+    this.isRendered = false;
+  }
+
+  // Actually clear the bar (only on exit)
+  clearBar(): void {
+    process.stdout.write(`\x1b[${this.rows};1H\x1b[K`);
     this.currentSuggestion = '';
     this.isRendered = false;
   }
 
   accept(): string {
     const suggestion = this.currentSuggestion;
-    this.clear();
+    this.currentSuggestion = '';
+    this.isRendered = false;
     return suggestion;
   }
 
@@ -105,6 +89,6 @@ export class GhostTextRenderer {
   }
 
   resetScrollRegion(): void {
-    this.clear();
+    this.clearBar();
   }
 }
