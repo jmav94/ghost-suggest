@@ -10,7 +10,6 @@ import { GhostConfig } from '../config/config.js';
 
 const TAB = '\t';
 const ESC = '\x1b';
-const CTRL_C = '\x03';
 
 export class PtyManager {
   private ptyProcess: pty.IPty;
@@ -24,8 +23,8 @@ export class PtyManager {
   private logFile: string;
 
   constructor(
-    private command: string,
-    private args: string[],
+    command: string,
+    args: string[],
     private config: GhostConfig,
     debug: boolean = false,
   ) {
@@ -36,11 +35,9 @@ export class PtyManager {
     this.engine = new AIEngine(config);
     this.renderer = new GhostTextRenderer();
 
-    // Spawn through user's login shell so PATH (nvm, etc.) is loaded
     const shell = process.env.SHELL || '/bin/zsh';
     const fullCommand = [command, ...args].join(' ');
 
-    // Give child PTY one less row - we reserve the last row for suggestions
     this.ptyProcess = pty.spawn(shell, ['-l', '-c', fullCommand], {
       name: 'xterm-256color',
       cols: process.stdout.columns || 80,
@@ -55,30 +52,15 @@ export class PtyManager {
     this.setupExit();
   }
 
-  /**
-   * Handle output from child process → user terminal
-   */
   private setupOutputHandler(): void {
     this.ptyProcess.onData((data: string) => {
-      // Write data to user's terminal
       process.stdout.write(data);
-
-      // Buffer for context
       this.buffer.push(data);
-
-      // Record output and reset debounce
       this.detector.recordOutput();
-
-      // Start idle detection for suggestion
-      this.detector.waitForIdle(() => {
-        this.tryShowSuggestion();
-      });
+      this.detector.waitForIdle(() => this.tryShowSuggestion());
     });
   }
 
-  /**
-   * Handle input from user → child process
-   */
   private setupInputHandler(): void {
     if (process.stdin.isTTY) {
       process.stdin.setRawMode(true);
@@ -89,65 +71,47 @@ export class PtyManager {
     process.stdin.on('data', (data: Buffer) => {
       const key = data.toString();
 
-      // TAB: Accept suggestion if one is displayed
       if (key === TAB && this.renderer.hasSuggestion()) {
-        const suggestion = this.renderer.accept();
-        // Write the suggestion to the child process as if user typed it
-        this.ptyProcess.write(suggestion);
+        this.ptyProcess.write(this.renderer.accept());
         return;
       }
 
-      // ESC: Dismiss suggestion
       if (key === ESC && this.renderer.hasSuggestion()) {
         this.renderer.clear();
         this.engine.abort();
         return;
       }
 
-      // Any other key: clear ghost text, cancel pending suggestion, forward key
       if (this.renderer.hasSuggestion()) {
         this.renderer.clear();
         this.engine.abort();
       }
 
-      // Cancel any pending suggestion generation
       this.detector.cancel();
       this.engine.abort();
       this.isSuggesting = false;
-
-      // Forward input to child process
       this.ptyProcess.write(key);
     });
   }
 
-  /**
-   * Handle terminal resize
-   */
   private setupResize(): void {
     process.stdout.on('resize', () => {
-      const cols = process.stdout.columns || 80;
-      // Give child the resized rows minus our status bar
-      this.ptyProcess.resize(cols, this.renderer.getChildRows());
+      this.ptyProcess.resize(
+        process.stdout.columns || 80,
+        this.renderer.getChildRows(),
+      );
       this.renderer.clear();
     });
   }
 
-  /**
-   * Handle child process exit
-   */
   private setupExit(): void {
     this.ptyProcess.onExit(({ exitCode }) => {
       this.cleanup();
       process.exit(exitCode);
     });
 
-    // Handle parent signals
-    const handleSignal = (signal: NodeJS.Signals) => {
-      this.ptyProcess.kill(signal);
-    };
-
-    process.on('SIGINT', () => handleSignal('SIGINT'));
-    process.on('SIGTERM', () => handleSignal('SIGTERM'));
+    process.on('SIGINT', () => this.ptyProcess.kill('SIGINT'));
+    process.on('SIGTERM', () => this.ptyProcess.kill('SIGTERM'));
   }
 
   private log(msg: string): void {
@@ -156,64 +120,51 @@ export class PtyManager {
     appendFileSync(this.logFile, `[${ts}] ${msg}\n`);
   }
 
-  /**
-   * Try to generate and show a suggestion
-   */
   private async tryShowSuggestion(): Promise<void> {
     if (this.isSuggesting) return;
 
     const recentLines = this.buffer.getRecentLines(15);
-    this.log(`IDLE detected. recentLines: ${JSON.stringify(recentLines.slice(-5))}`);
+    this.log(`IDLE: ${JSON.stringify(recentLines.slice(-5))}`);
 
-    // Find the prompt line and count lines after it
-    let promptIndex = -1;
+    let hasPrompt = false;
     for (let i = recentLines.length - 1; i >= 0; i--) {
       if (this.detector.isPrompt(recentLines[i])) {
-        promptIndex = i;
+        hasPrompt = true;
         break;
       }
     }
 
-    if (promptIndex === -1) {
-      this.log(`NOT a prompt. Skipping.`);
+    if (!hasPrompt) {
+      this.log('No prompt found');
       return;
     }
 
-    const linesAfterPrompt = recentLines.length - 1 - promptIndex;
-    this.log(`PROMPT detected at index ${promptIndex}`);
-
+    this.log('Prompt detected, generating suggestion...');
     this.isSuggesting = true;
     this.renderer.showLoading();
 
     try {
       const context = this.buffer.getContext(this.config.contextLines);
-      this.log(`Context length: ${context.length} chars`);
-
       const suggestion = await this.engine.suggest(context);
-      this.log(`Suggestion received: ${JSON.stringify(suggestion)}`);
+      this.log(`Suggestion: ${JSON.stringify(suggestion)}`);
 
       if (suggestion && this.isSuggesting) {
-        this.log(`Rendering suggestion in status bar...`);
         this.renderer.render(suggestion);
-        this.log(`Suggestion rendered!`);
       } else {
-        this.log(`Not rendering. suggestion="${suggestion}", isSuggesting=${this.isSuggesting}`);
+        this.renderer.clear();
       }
     } catch (err: unknown) {
-      this.log(`ERROR in suggestion: ${err instanceof Error ? err.message : String(err)}`);
+      this.log(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      this.renderer.clear();
     } finally {
       this.isSuggesting = false;
     }
   }
 
-  /**
-   * Cleanup resources
-   */
   private cleanup(): void {
     this.detector.dispose();
     this.engine.abort();
     this.renderer.resetScrollRegion();
-
     if (this.rawMode && process.stdin.isTTY) {
       process.stdin.setRawMode(false);
     }
